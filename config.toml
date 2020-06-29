@@ -2,8 +2,8 @@
 # Site Settings
 
 publishDir = "docs"
-baseURL = "https://example.com/"
-title = "Hugo Theme MemE"
+baseURL = "https://lwp-ping.github.io/"
+title = "lwp-ping blog"
 languageCode = "en"
 hasCJKLanguage = false
 # Copyright information (Markdown supported)
@@ -23,7 +23,7 @@ defaultContentLanguageInSubdir = false
 pluralizeListTitles = false
 
 # The length of text in words to show in summary
-summaryLength = 42
+summaryLength = 2
 
 # Enable Emoji emoticons support?
 enableEmoji = false
@@ -95,7 +95,7 @@ uglyURLs = false
 # Author’s information
 [author]
     # Name
-    name = "reuixiy"
+    name = "lwp-ping"
     # Email
     email = "reuixiy@gmail.com"
     # Motto or introduction
@@ -346,7 +346,7 @@ uglyURLs = false
     # Note: used for HTML head meta, JSON-LD,
     #       Open Graph, Atom, RSS
 
-    siteCreatedTime = "1969-07-20T20:17:43+00:00"
+    siteCreatedTime = "2020-06-24T20:17:43+00:00"
     # ATTENTION: keep this format, change
     #            the number
 
@@ -489,7 +489,7 @@ uglyURLs = false
     # Atom & RSS
 
     # Include full content?
-    includeContent = true
+    includeContent = false
     # Note: If false, only the summary of
     #       the post will be included. The
     #       summary, Hugo automatically
@@ -722,7 +722,7 @@ uglyURLs = false
     #            supported
 
     # The content width of the post
-    postWidth = 36
+    postWidth = 42
     # Note: you can leave it empty("") to
     #       fallback to the default value: 42
     #       Unit: em
@@ -858,7 +858,7 @@ uglyURLs = false
 
     enableImageHost = false
 
-    imageHostURL = "https://example.com/"
+    imageHostURL = "https://lwp-ping.github.io/"
 
     # Replace the image link in the HTML
     # head meta also?
@@ -880,7 +880,7 @@ uglyURLs = false
 
     enableVideoHost = false
 
-    videoHostURL = "https://example.com/"
+    videoHostURL = "https://lwp-ping.github.io/"
 
 
     ######################################

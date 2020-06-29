@@ -1,0 +1,75 @@
+---
+title: "spark原理综述"
+date: 2020-06-24T16:03:32+08:00
+draft: false
+---
+主要是针对日常工作中使用spark碰到的问题的一个小小总结(涉及Executor,Spark,RDD等概念, 是17年还是18年在公司写的文章搬运出来)<!--more-->
+### 整体架构
+![spark整体架构](/img/spark/spark架构图.png)
+
+&emsp;&emsp;一般，当我们提交一个应用(jar包，py脚本)时，是首先提交到Master(Cluster Manager) ,然后Master会随机选择一个worker去启动Driver(因为Driver是负责收集最后结果数据的，所以要注意OOM问题)，Driver负责创建SparkContext和SparkSession之类的，同时根据任务创建RDD和一系列操作，并把这些信息发送到所谓的Master结点,也即是上图的Cluster Manager(如yarn,Mesos等), Cluster Manager负责整个集群的资源管理，根据应用提交的配置，分配一系列的worker结点(这个一般指物理机，其中会有一个后台进程NodeManager与Cluster Manager进行通信)，同时在worker里面根据内存要求大小等配置，创建executor(对应一个JVM)，一个worker里面可以有分属于不同应用的executor(不同任务数据彼此不共享)。随后，Driver通过把应用分成一系列的task，并把信息发到Master，交由Master进行调度，同时把应用的代码序列化到executor中，在executor中会启动若干个task对数据进行处理。<br />
+&emsp;&emsp;通常User提交一个应用时，Spark会根据action()划分为一个个job，而每一个job根据前后是否需要shuffle划分为一个个stage，每个stage的task数量一般对应于stage最后的RDD算子所要求的partition数量，一个task对应一个partition(因为stage最后的RDD算子通常是产生结果的，task可以通过链式关系追溯每个步骤需要涉及的partition数目)。spark.executor.cores指定executor有多少个core(启用超线程后的逻辑CPU)，spark.task.cpus指定一个task占用多少个core。所以一个executor同时可以有spark.executor.cores/spark.task.cpus个task在执行。<br />
+&emsp;&emsp;所以在整个spark架构上面有几个重要的角色(不同的模式yarn、standalone等又有所不同)：<br />
+&emsp;&emsp;Driver：整个主程序的入口，将提交的application分拆为job, stage, task。<br />
+&emsp;&emsp;Master：负责application所需的资源的申请。<br />
+&emsp;&emsp;Executor：对各个分区(partition)的数据进行实际的计算。<br />
+### RDD(Resilient Distributed Dataset) 
+&emsp;&emsp;RDD是Spark中的核心概念，意思是不可变，分散的，数据集合。即是说对开发者而言抽象成一份完整独立的数据，但数据物理上是分布在多台机器之上，可以并行进行处理。分散的每一份数据称为一个分区(partition)。<br />
+&emsp;&emsp;创建RDD的方式有两种方式：从外部存储系统读取数据创建或者对一个已有的RDD进行转换操作(transform)。<br />
+![](/img/spark/RDD.png)
+&emsp;&emsp;RDD 支持两种类型的操作：transformation 和 action。transformation从一个已存在的RDD创建一个新的RDD(记住RDD本身是不可变的)，新的RDD会保持一个对父RDD的指向(lineage)。所有的转换操作都是惰性操作(Lazy Evaluation)，并不会立即进行计算,因为每一步RDD操作都在内存存储中间数据，其实是非常浪费的，并且不能优化计算。而action操作通常会产生结果，所以遇到action操作则会通过lineage进行追溯，进行一系列RDD算子的操作。<br/>
+![](/img/spark/RDD使用.png)
+&emsp;&emsp;上图中的sc.textFile()和rdd.filter()并不会立即执行，而当遇到filtered.count()则会开始拉取数据，执行filter()，然后用count计算结果。<br/>
+&emsp;&emsp;也正正因为lineage，所以RDD有容错的特性(fault-tolerant)，即使失败了，也可以重头开始运算。<br/>
+### Shuffle
+&emsp;&emsp;spark中的某些操作会触发所谓的shuffle，会将各个partition的数据比如按照某个key进行重新的分配，以便进行汇总的操作。像repartition、coalesce、groupByKey、reduceByKey、join都会引起shuffle操作。<br/>
+&emsp;&emsp;shuffle本身可能包含disk I/O、data serialization、network I/O、JVM的垃圾回收操作，是一个十分昂贵的操作。<br/>
+&emsp;&emsp;对于转换(Transformation)操作，Spark一般会细分为两种类型：<br/>
+&emsp;&emsp;Narrow transformation：指的是计算所需的数据都在本分区之内，无须依赖其他分区的数据。比如filter()、map()、flatMap()都是。<br/>
+&emsp;&emsp;Wide transformation：指的是计算所需的数据横跨多个分区。因此需要shuffle操作，将数据汇集到一个地方去。比如groupByKey()，数据本身是随机分散在不同的分区上，需要将key相同的数据汇集到同一个结点，才能方便进行group操作。<br/>
+![](/img/spark/shuffle_transaction.png)
+&emsp;&emsp;另一个比较常见的操作是对两份数据进行join操作。join由于要进行交叉连接，避免不了shuffle操作。Spark提供了两种途径进行join操作。两份RDD中key相同的数据通过shuffle重新分布到同一个分区中，再进行join操作。意味着，RDD中的每一个条目都有可能通过网络传输到另一个worker结点进行处理。<br/>
+![](/img/spark/shuffle_join1.png)
+&emsp;&emsp;另一种方式则称之为broadcast join，两份RDD中选择一份复制到另一个RDD存在的每一个分区之中。如果其中一份RDD数据量远少于另一份RDD，选择数据量少的RDD进行broadcast join可以大大减少数据量的传输。<br/>
+![](/img/spark/shuffle_join2.png)
+&emsp;&emsp;在一些情况下，转换操作可以在不影响最终结果的情况下调乱顺序(re-order)以减少shuffle的数据量。<br/>
+![](/img/spark/shuffle_join3.png)
+&emsp;&emsp;比如针对上图中的SQL语句，右边先进行filter操作，可以减少两个RDD进行join操作之前的数据量，从而减少shuffle的数据量。<br/>
+### Shuffle流程
+&emsp;&emsp;shuffle的过程可以简单地分为shuffle-write和shuffle-read。shuffle-write是前一个stage的最后操作，一般按照key进行”分类”，将数据写入内存的缓冲区，当缓冲区填满后，会溢写到磁盘里面。而shuffle-read通常是后一个stage刚开始要做的事情，通过Driver知道每个task对应的数据在哪个executor上，并不是所有shuffle-write结束后才进行，而是一边拉取，一边在自己的缓冲区进行聚合计算。<br/>
+&emsp;&emsp;shuffle本身包含好几种不同的实现方式。最早的应该是hash shuffle，上一个stage的task会根据下一个stage的task数量，生成对应数量的文件。即是如果上一个stage的task数量为M，下一个stage的task数量为R，一共会生成M*R个文件，当M和R都很大时，文件数量是惊人的，对磁盘的读写会造成压力。当然可以通过设置spark.shuffle.consolidateFiles，为每个Executor中同时并行的每个task创建一个shuffleFileGroup，后一批的task可以重用shuffleFileGroup，从而减少最后创建的文件数量。<br/>
+&emsp;&emsp;后续spark实现了一个sort shuffle版本。不会为下游的每个task单独创建一个文件，在溢写到磁盘之前，会先对内存中的数据进行排序，当然，多次溢写还是会在磁盘上产生多个临时文件，最终每个task会merge成一个磁盘文件和一个索引文件(索引可以认为是下一个stage每个task的id)。下一个stage的每个task就根据索引文件去拉取相应的数据块。相较于之前的hash shuffle，文件数量减少了，可以将磁盘的随机写替换成顺序写，不过也增加了排序的时间。<br/>
+&emsp;&emsp;当然，针对sort shuffle，还有一个spark.shuffle.sort.bypassMergeThreshold的参数，当shuffle read task的数量少于这个参数时，则shuffle write的过程中不会进行排序操作，前一个stage的task仍然是为下一个stage的每一个task创建一个临时文件，但最后会将每个task产生的临时文件合并成一个文件，并会创建单独的索引文件。这个在确实不需要对数据进行排序操作的时候，可以省下排序的性能开销。<br/>
+### Cache机制
+```scala
+val textFile = sc.textFile(“/user/emp.txt”) 
+val wordsRDD = textFile.flatMap(line => line.spilt(“\\w”))
+```
+&emsp;&emsp;以上两行代码都是惰性操作，并不会立即执行，当调用wordsRDD.count时，因为是一个action操作，所以Spark会顺着RDD的lineage从文件系统开始加载emp.txt构成RDD并开始计算。假如我们现在又要对文本进行另外两个操作：<br/>
+```scala
+val positiveWordsCount = wordsRDD.filter(word => isPositive(word)).count()
+val negativeWordsCount = wordsRDD.filter(word => isNegative(word)).count()
+```
+&emsp;&emsp;我们需要从val textFile = sc.textFile(“/user/emp.txt”)这行代码从头开始计算，可以看出这些都是重复计算。如果我们wordsRDD.count之后调用wordsRDD.cache()的话(cache本身也是惰性操作), 当wordsRDD发起计算时，会将计算结果缓存到内存之中(如果内存足够的话)，相当于一个checkpoint，那么下次对positiveWordsCount、negativeWordsCount的计算可以从内存中取出结果，直接从wordsRDD的结果基础上开始计算，避免了不必要的重复计算。<br/>
+&emsp;&emsp;cache()与persist()都可以设置将计算结果缓存，区别是cache()只将计算结果缓存到内存之中，而persist()可以设置不同的缓存级别，比如可以将结果缓存到内存和磁盘之中，当缓存的数据不需要时，可以调用unpersist()。<br/>
+### 内存管理
+&emsp;&emsp;Executor作为一个JVM进程，同时会开辟一块堆外(off-heap)内存(堆外内存的好处是可以避免频繁的GC，内存的分配和释放是手动的)。Executor内运行的并发任务共享JVM堆内内存。<br/>
+![](/img/spark/内存管理1.png)
+![](/img/spark/内存管理2.png)
+&emsp;&emsp;如上图所示：分配到JVM的内存会划分为几个部分：<br/>
+&emsp;&emsp;Reserved Memory: 这部分是强制的，主要是防止OOM。<br/>
+&emsp;&emsp;User Memory：主要是用来存储代码中自定义的数据。<br/>
+&emsp;&emsp;Storage Memory：主要是缓存RDD数据和广播(Broadcast)数据。<br/>
+&emsp;&emsp;Execution Memory：主要是任务在执行Shuffle时占用的内存。<br/>
+&emsp;&emsp;从spark1.6开始，storage和execution是实行动态占用机制的，可以互相占用对方默认分配的内存空间(如果内存空间有空闲的话)。如果彼此的空间都不足，则还是要溢出(spill)到磁盘之上，这些都可以通过参数spark.memory.fraction，spark.memory.storageFraction等去调整。<br/>
+&emsp;&emsp;当然从物理机的角度，也必须保留一点点的CPU和内存资源保证Spark的NodeManager和操作系统的正常运行，所以实际配置spark.executor.memory，spark.executor.cores等时要多加注意。<br/>
+### Broadcast
+&emsp;&emsp;spark提供了一个全局的只读变量的机制--Broadcast，Broadcast会缓存在每个executor的内存中，executor中的每一个Task都可以共享读取Broadcast变量。一个实用的例子：如果一个极大的RDD和一个极小的RDD进行join，与其通过shuffle操作，不如将极小的RDD变成一个Broadcast，分发到各个executor，变成一个所谓的lookup table，每个task都可以在本地进行操作，避免昂贵的shuffle操作。<br/>
+&emsp;&emsp;Broadcast是如何从Driver分发到各个executor中，Spark先后实现了两种机制：HttpBroadcast和TorrentBroadcast。<br/>
+&emsp;&emsp;在Spark中，executor不论是执行代码，或是获取Broadcast变量都是采取向Driver拉取的方式(data fetching)。<br/>
+&emsp;&emsp;HttpBroadcast就是相当于executor作为http的客户端，driver作为http的服务端，两者之间发起http连接，executor发起请求，获得Broadcast数据。但是这个方式的缺点是，当Broadcast数据比较大，executor比较多的时候，Driver的带宽会成为瓶颈，所以才有了后来的TorrentBroadcast方式。<br/>
+&emsp;&emsp;TorrentBroadcast： 是参考了BitTorrent协议的p2p思想，简单的思想就是Driver将Broadcast数据切分为一个个block。Executor需要Broadcast数据会向Driver进行拉取，当然，block的拉取顺序是随机的，当Executor拉取一个block成功后，会向Driver进行报告，然后Driver可以更新这个block的路由信息，Executor会成为该block的一个新数据源，当有另外的Executor发起对block的拉取请求时，可以随机选择一个数据源进行拉取，缓解Driver的压力。开始时候，可能会比较慢，但随着Executor存储的block越多，速度会越来越快。所以当Broadcast数据量少时，用HttpBroadcast，数据量大时，改用TorrentBroadcast。
+#### 参考文献
+- Spark官方文档
+- Cloudera博客
+- 美团技术博客
